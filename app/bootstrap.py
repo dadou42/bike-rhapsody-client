@@ -16,12 +16,12 @@ log = get_logger("bootstrap")
 def bootstrap() -> AppSettings:
     """Lance tout ce qui est nécessaire avant d'afficher la fenêtre principale."""
 
-    # 1. Logging
+    # 1. SQLite en premier (nécessaire pour lire les settings)
+    init_db()
+
+    # 2. Logging (peut maintenant lire log_level depuis DB)
     setup_logging(get_setting("log_level") or "INFO")
     log.info("=== Bike Rhapsody Mac Client starting ===")
-
-    # 2. SQLite
-    init_db()
 
     # 3. Profil serveur actif
     profile = get_active_profile()

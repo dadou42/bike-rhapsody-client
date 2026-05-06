@@ -115,7 +115,6 @@ class MainWindow(QMainWindow):
         state = get_state()
         state.connection_changed.connect(self._on_connection_changed)
         state.auth_changed.connect(self._on_auth_changed)
-        state.update_available.connect(self._on_update_available)
 
     @Slot(bool, str)
     def _on_connection_changed(self, connected: bool, url: str):
