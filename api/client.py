@@ -37,6 +37,14 @@ class BRClient:
         self._http.cookies.clear()
         log.debug("Session cleared")
 
+    def get_cookie(self, name: str) -> str | None:
+        """Retourne la valeur d'un cookie du jar httpx."""
+        return self._http.cookies.get(name)
+
+    def cookies_dict(self) -> dict:
+        """Retourne tous les cookies du jar httpx sous forme de dict."""
+        return dict(self._http.cookies)
+
     # ── HTTP verbs ────────────────────────────────────────────────────────────
 
     def get(self, path: str, **kwargs) -> httpx.Response:

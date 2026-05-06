@@ -4,7 +4,7 @@ Vue Paramètres — profils serveur, auth, options générales.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QFrame, QComboBox, QCheckBox, QMessageBox,
-    QScrollArea, QFormLayout, QGroupBox
+    QScrollArea, QFormLayout, QGroupBox, QInputDialog
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot
 from app.app_state import get_state
@@ -14,7 +14,8 @@ log = get_logger("ui.settings")
 
 
 class LoginWorker(QThread):
-    result = Signal(bool, str)  # success, message
+    """Étape 1 : tente le login et émet l'AuthResult complet."""
+    finished = Signal(object)   # AuthResult
 
     def __init__(self, username: str, password: str, profile_name: str):
         super().__init__()
@@ -24,8 +25,24 @@ class LoginWorker(QThread):
 
     def run(self):
         from api.auth_api import login
-        r = login(self.username, self.password, self.profile_name)
-        self.result.emit(r.success, r.message if not r.success else r.username)
+        result = login(self.username, self.password, self.profile_name)
+        self.finished.emit(result)
+
+
+class TwoFAWorker(QThread):
+    """Étape 2 : soumet le code TOTP et émet l'AuthResult."""
+    finished = Signal(object)   # AuthResult
+
+    def __init__(self, code: str, pending_token: str, profile_name: str):
+        super().__init__()
+        self.code = code
+        self.pending_token = pending_token
+        self.profile_name = profile_name
+
+    def run(self):
+        from api.auth_api import login_2fa
+        result = login_2fa(self.code, self.pending_token, self.profile_name)
+        self.finished.emit(result)
 
 
 class SettingsView(QWidget):
@@ -249,26 +266,73 @@ class SettingsView(QWidget):
         email = self._email_input.text().strip()
         password = self._password_input.text()
         if not email or not password:
-            self._auth_status.setText("Email et mot de passe requis")
+            self._auth_status.setText("⚠️ Email et mot de passe requis")
             return
         self._btn_login.setEnabled(False)
         self._btn_login.setText("Connexion…")
+        self._auth_status.setText("Authentification en cours…")
+        self._auth_status.setStyleSheet("font-size: 12px; color: #6b7280;")
         from storage.repositories import get_active_profile
         profile = get_active_profile()
-        profile_name = profile["name"] if profile else "default"
-        self._login_worker = LoginWorker(email, password, profile_name)
-        self._login_worker.result.connect(self._on_login_result)
+        self._current_profile_name = profile["name"] if profile else "default"
+        self._login_worker = LoginWorker(email, password, self._current_profile_name)
+        self._login_worker.finished.connect(self._on_login_result)
         self._login_worker.start()
 
-    @Slot(bool, str)
-    def _on_login_result(self, success: bool, message: str):
+    @Slot(object)
+    def _on_login_result(self, result):
+        """Reçoit l'AuthResult de l'étape 1."""
         self._btn_login.setEnabled(True)
         self._btn_login.setText("Se connecter")
-        if success:
-            get_state().set_authenticated(True, message)
-        else:
-            self._auth_status.setText(f"❌ {message}")
-            self._auth_status.setStyleSheet("font-size: 12px; color: #dc2626; font-weight: 600;")
+
+        if result.success:
+            get_state().set_authenticated(True, result.username)
+            return
+
+        if result.needs_2fa:
+            self._auth_status.setText("🔐 Code double authentification requis…")
+            self._auth_status.setStyleSheet("font-size: 12px; color: #f97316; font-weight: 600;")
+            self._ask_2fa_code(result.pending_token)
+            return
+
+        self._auth_status.setText(f"❌ {result.message}")
+        self._auth_status.setStyleSheet("font-size: 12px; color: #dc2626; font-weight: 600;")
+
+    def _ask_2fa_code(self, pending_token: str):
+        """Affiche un dialog pour saisir le code TOTP, puis lance l'étape 2."""
+        code, ok = QInputDialog.getText(
+            self,
+            "Double authentification",
+            "Entrez le code à 6 chiffres de votre application d'authentification :",
+            QLineEdit.EchoMode.Normal,
+        )
+        if not ok or not code.strip():
+            self._auth_status.setText("⚠️ Connexion annulée — code 2FA non fourni")
+            self._auth_status.setStyleSheet("font-size: 12px; color: #6b7280;")
+            return
+
+        self._btn_login.setEnabled(False)
+        self._btn_login.setText("Vérification 2FA…")
+        self._auth_status.setText("Vérification du code 2FA…")
+
+        self._2fa_worker = TwoFAWorker(
+            code.strip(), pending_token, self._current_profile_name
+        )
+        self._2fa_worker.finished.connect(self._on_2fa_result)
+        self._2fa_worker.start()
+
+    @Slot(object)
+    def _on_2fa_result(self, result):
+        """Reçoit l'AuthResult de l'étape 2 (TOTP)."""
+        self._btn_login.setEnabled(True)
+        self._btn_login.setText("Se connecter")
+
+        if result.success:
+            get_state().set_authenticated(True, result.username)
+            return
+
+        self._auth_status.setText(f"❌ {result.message}")
+        self._auth_status.setStyleSheet("font-size: 12px; color: #dc2626; font-weight: 600;")
 
     def _on_logout(self):
         from api.auth_api import logout
