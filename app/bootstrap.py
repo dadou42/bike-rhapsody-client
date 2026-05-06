@@ -63,7 +63,14 @@ def bootstrap() -> AppSettings:
         state.set_connected(False, server_url)
         log.warning("Server not reachable at %s", server_url)
 
-    # 6. Reconstruire AppSettings depuis DB
+    # 6. Démarrer le worker d'upload (si authentifié)
+    if state.is_authenticated:
+        from sync.upload_manager import get_upload_manager
+        mgr = get_upload_manager()
+        mgr.start()
+        log.info("Upload worker started")
+
+    # 7. Reconstruire AppSettings depuis DB
     settings = AppSettings()
     settings.active_profile.url = server_url
     settings.active_profile.name = profile_name

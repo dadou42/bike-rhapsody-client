@@ -14,6 +14,8 @@ from ui.components.sidebar import Sidebar
 from ui.dashboard_view import DashboardView
 from ui.settings_view import SettingsView
 from ui.logs_view import LogsView
+from ui.media_import_view import MediaImportView
+from ui.queue_view import QueueView
 from ui.placeholder_view import PlaceholderView
 from app.app_state import get_state
 from logs.logger import get_logger
@@ -84,8 +86,8 @@ class MainWindow(QMainWindow):
 
         self._pages: dict[str, QWidget] = {
             "dashboard":  DashboardView(),
-            "import":     PlaceholderView("Import médias", "📥", "Phase 2 — scan, miniatures, déduplication"),
-            "queue":      PlaceholderView("File d'attente", "📋", "Phase 2 — upload persistant avec retry"),
+            "import":     MediaImportView(),
+            "queue":      QueueView(),
             "activities": PlaceholderView("Activités", "🚴", "Phase 3 — matching médias ↔ activités"),
             "backup":     PlaceholderView("Sauvegarde", "💾", "Phase 5 — BDD + fichiers + manifest"),
             "migration":  PlaceholderView("Migration serveur", "🔄", "Phase 6 — assistant source/cible"),
