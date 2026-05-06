@@ -20,7 +20,17 @@ fail() { echo -e "${RED}✗${NC} $*"; exit 1; }
 VERSION=$(python3 -c "import json; print(json.load(open('version.json'))['version'])")
 APP_NAME="BikeRhapsodyClient"
 
-info "Building Bike Rhapsody Client v${VERSION} (universal2)"
+# Mode dev (--dev) = build natif seulement, plus rapide, pas de contrainte fat binary
+DEV_MODE=0
+for arg in "$@"; do [[ "$arg" == "--dev" ]] && DEV_MODE=1; done
+
+if [[ $DEV_MODE -eq 1 ]]; then
+    TARGET_ARCH=""
+    info "Building Bike Rhapsody Client v${VERSION} (native — dev mode)"
+else
+    TARGET_ARCH="--target-arch universal2"
+    info "Building Bike Rhapsody Client v${VERSION} (universal2)"
+fi
 
 # ── Prérequis ─────────────────────────────────────────────────────────────────
 command -v python3 >/dev/null   || fail "python3 not found"
@@ -38,12 +48,12 @@ pip install -q -r requirements.txt pyinstaller
 rm -rf build/ dist/
 
 # ── Build ──────────────────────────────────────────────────────────────────────
-info "Running PyInstaller (target: universal2)…"
+info "Running PyInstaller…"
 pyinstaller \
     --noconfirm \
     --windowed \
     --name "$APP_NAME" \
-    --target-arch universal2 \
+    $TARGET_ARCH \
     --add-data "version.json:." \
     --add-data "assets:assets" \
     --hidden-import PySide6.QtCore \
