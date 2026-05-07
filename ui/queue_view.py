@@ -170,7 +170,7 @@ class QueueView(QWidget):
             elif status == "failed":
                 errors += 1
 
-            bg_hex, color_hex, label = STATUS_STYLE.get(status, ("", "#6b7280", status))
+            label, bg_hex, color_hex = STATUS_STYLE.get(status, (status, "", "#6b7280"))
 
             name_item = QTableWidgetItem(row["original_name"] or "—")
             size_item = QTableWidgetItem(_fmt_size(row["size_bytes"] or 0))

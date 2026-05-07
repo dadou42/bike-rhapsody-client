@@ -13,13 +13,16 @@ CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
 
 def upload_media(
     local_path: str,
+    sha256: Optional[str] = None,
     activity_id: Optional[str] = None,
-    metadata: Optional[dict] = None,
+    captured_at: Optional[str] = None,
+    gps_lat: Optional[float] = None,
+    gps_lon: Optional[float] = None,
     progress_cb=None,
 ) -> dict:
     """
-    Upload un fichier média vers Bike Rhapsody.
-    Retourne la réponse JSON du serveur.
+    Upload un fichier média vers Bike Rhapsody (endpoint orphan).
+    Retourne la réponse JSON {ok, id, duplicate, size, sha256}.
     Lève une exception en cas d'erreur.
     """
     client = get_client()
@@ -28,33 +31,42 @@ def upload_media(
     log.info("Uploading %s (%s)", path.name, _fmt_size(size))
 
     fields: dict = {}
+    if sha256:
+        fields["sha256"] = sha256
     if activity_id:
-        fields["activity_id"] = activity_id
-    if metadata:
-        import json
-        fields["metadata"] = json.dumps(metadata)
+        fields["activity_id"] = str(activity_id)
+    if captured_at:
+        fields["captured_at"] = captured_at
+    if gps_lat is not None:
+        fields["gps_lat"] = str(gps_lat)
+    if gps_lon is not None:
+        fields["gps_lon"] = str(gps_lon)
 
-    def _gen():
-        read = 0
-        with open(path, "rb") as f:
-            while chunk := f.read(65536):
-                yield chunk
-                read += len(chunk)
-                if progress_cb:
-                    progress_cb(read, size)
-
-    # Multipart upload
-    import httpx
+    # Multipart upload — timeout étendu pour gros fichiers
     with open(path, "rb") as f:
         files = {"file": (path.name, f, _mime_type(path))}
-        r = client.post("/api/media/upload", files=files, data=fields)
+        # Note : la progression réelle d'upload nécessite un client httpx
+        # avec hook personnalisé ; pour l'instant on émet 50% au start et
+        # 100% à la fin pour donner un retour visuel.
+        if progress_cb:
+            progress_cb(0, size)
+        r = client.post(
+            "/api/media/upload",
+            files=files,
+            data=fields,
+            timeout=300,  # 5 minutes pour les gros fichiers
+        )
+        if progress_cb:
+            progress_cb(size, size)
 
     if r.status_code not in (200, 201):
         detail = _extract_error(r)
         raise RuntimeError(f"Upload failed HTTP {r.status_code}: {detail}")
 
     data = r.json()
-    log.info("Upload OK: %s → server id=%s", path.name, data.get("id"))
+    log.info("Upload OK: %s → server id=%s%s",
+             path.name, data.get("id"),
+             " (duplicate)" if data.get("duplicate") else "")
     return data
 
 

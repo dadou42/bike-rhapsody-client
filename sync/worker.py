@@ -100,6 +100,7 @@ class UploadWorker(QThread):
 
             result = upload_media(
                 local_path,
+                sha256=sha256 or None,
                 activity_id=str(activity_id) if activity_id else None,
                 progress_cb=on_progress,
             )
