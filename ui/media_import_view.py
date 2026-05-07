@@ -7,12 +7,13 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QFileDialog, QProgressBar, QScrollArea,
     QListWidget, QListWidgetItem, QSizePolicy, QSplitter,
-    QAbstractItemView, QMenu
+    QAbstractItemView, QMenu, QCheckBox, QMessageBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QSize, QTimer
 from PySide6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QColor, QFont
 
 from media.media_model import MediaFile, MediaStatus
+from media.fit_enricher import FitEnricher, write_gps_to_exif
 from logs.logger import get_logger
 
 log = get_logger("ui.import")
@@ -145,15 +146,7 @@ class MediaItemWidget(QWidget):
         self._name_lbl.setStyleSheet("font-size: 13px; font-weight: 600; color: #1f2937;")
         self._name_lbl.setMaximumWidth(340)
 
-        meta_parts = []
-        if self.media.size_bytes:
-            meta_parts.append(_fmt_size(self.media.size_bytes))
-        if self.media.captured_at:
-            meta_parts.append(self.media.captured_at[:10])
-        if self.media.file_type:
-            meta_parts.append(self.media.file_type.upper())
-
-        self._meta_lbl = QLabel(" · ".join(meta_parts) or "—")
+        self._meta_lbl = QLabel(self._build_meta_text())
         self._meta_lbl.setStyleSheet("font-size: 11px; color: #6b7280;")
 
         info.addWidget(self._name_lbl)
@@ -189,6 +182,18 @@ class MediaItemWidget(QWidget):
                      padding: 3px 8px; font-size: 11px; font-weight: 700; }}
         """)
 
+    def _build_meta_text(self) -> str:
+        parts = []
+        if self.media.size_bytes:
+            parts.append(_fmt_size(self.media.size_bytes))
+        if self.media.captured_at:
+            parts.append(self.media.captured_at[:16].replace("T", " "))
+        if self.media.file_type:
+            parts.append(self.media.file_type.upper())
+        if self.media.gps_lat is not None and self.media.gps_lon is not None:
+            parts.append(f"🛰 {self.media.gps_lat:.4f},{self.media.gps_lon:.4f}")
+        return " · ".join(parts) or "—"
+
     def show_progress(self, pct: int):
         """Affiche la progression d'upload (0-100) dans le badge."""
         bg, color = "#dbeafe", "#2563eb"
@@ -201,6 +206,7 @@ class MediaItemWidget(QWidget):
     def refresh(self):
         self._update_status_badge()
         self._load_thumb()
+        self._meta_lbl.setText(self._build_meta_text())
 
 
 class MediaImportView(QWidget):
@@ -230,6 +236,16 @@ class MediaImportView(QWidget):
         header.addWidget(title)
         header.addStretch()
 
+        self._btn_enrich = QPushButton("🛰 Enrichir GPS depuis FIT")
+        self._btn_enrich.setStyleSheet(self._btn_style("#0ea5e9"))
+        self._btn_enrich.setEnabled(False)
+        self._btn_enrich.setToolTip(
+            "Pour chaque photo sans GPS, cherche le point GPS correspondant\n"
+            "dans les fichiers .fit/.gpx importés en se basant sur l'horodatage."
+        )
+        self._btn_enrich.clicked.connect(self._on_enrich_gps)
+        header.addWidget(self._btn_enrich)
+
         self._btn_queue_all = QPushButton("📤 Tout mettre en file")
         self._btn_queue_all.setStyleSheet(self._btn_style("#f97316"))
         self._btn_queue_all.setEnabled(False)
@@ -243,6 +259,17 @@ class MediaImportView(QWidget):
         header.addWidget(self._btn_clear)
 
         layout.addLayout(header)
+
+        # Option : réécrire le GPS dans les EXIF des fichiers originaux
+        self._chk_write_exif = QCheckBox(
+            "Réécrire le GPS dans les fichiers originaux (utile pour partage)"
+        )
+        self._chk_write_exif.setStyleSheet("font-size: 12px; color: #6b7280; padding: 0 4px;")
+        self._chk_write_exif.setToolTip(
+            "Si activé, les fichiers JPEG originaux sur ton disque seront modifiés\n"
+            "pour inclure les coordonnées GPS interpolées depuis le FIT."
+        )
+        layout.addWidget(self._chk_write_exif)
 
         # Drop zone
         self._drop_zone = DropZone()
@@ -412,9 +439,105 @@ class MediaImportView(QWidget):
         self._btn_queue_all.setEnabled(ready > 0)
         self._btn_clear.setEnabled(True)
 
+        # Activer "Enrichir GPS" s'il y a au moins 1 FIT/GPX et 1 photo sans GPS
+        has_track = any(
+            (m.file_type or "").lower() in ("fit", "gpx", "tcx") for m in self._results
+        )
+        photos_no_gps = [
+            m for m in self._results
+            if (m.file_type or "").lower() == "photo"
+            and (m.gps_lat is None or m.gps_lon is None)
+            and m.captured_at
+        ]
+        self._btn_enrich.setEnabled(has_track and len(photos_no_gps) > 0)
+
         # Chaîner le prochain scan si nécessaire
         if has_more:
             self._start_next_scan()
+
+    def _on_enrich_gps(self):
+        """Lit les FIT importés, interpole le GPS de chaque photo par captured_at."""
+        from storage.local_db import db
+
+        fit_paths = [
+            m.local_path for m in self._results
+            if (m.file_type or "").lower() in ("fit", "gpx", "tcx")
+        ]
+        if not fit_paths:
+            self._summary.setText("⚠️ Aucun fichier FIT/GPX importé")
+            return
+
+        self._summary.setText(f"🛰 Lecture de {len(fit_paths)} trace(s) GPS…")
+        self._btn_enrich.setEnabled(False)
+
+        try:
+            enricher = FitEnricher.from_files(fit_paths, tolerance_seconds=300)
+        except Exception as e:
+            log.error("FIT load failed: %s", e)
+            self._summary.setText(f"❌ Erreur lecture FIT : {e}")
+            self._btn_enrich.setEnabled(True)
+            return
+
+        if enricher.is_empty():
+            self._summary.setText("⚠️ Les fichiers FIT ne contiennent aucun point GPS exploitable")
+            self._btn_enrich.setEnabled(True)
+            return
+
+        # Boucle d'enrichissement
+        write_back = self._chk_write_exif.isChecked()
+        enriched = 0
+        no_match = 0
+        exif_written = 0
+        for media in self._results:
+            if (media.file_type or "").lower() != "photo":
+                continue
+            if media.gps_lat is not None and media.gps_lon is not None:
+                continue
+            if not media.captured_at:
+                no_match += 1
+                continue
+
+            gps = enricher.find_gps(media.captured_at)
+            if gps is None:
+                no_match += 1
+                continue
+
+            lat, lon, alt = gps
+            media.gps_lat = lat
+            media.gps_lon = lon
+            if alt is not None:
+                media.gps_alt = alt
+
+            # Persister en DB locale → le worker enverra ces champs au upload
+            if media.db_id:
+                db().execute(
+                    "UPDATE media_files SET gps_lat=?, gps_lon=?, gps_alt=?, "
+                    "updated_at=datetime('now') WHERE id=?",
+                    (lat, lon, alt, media.db_id),
+                )
+                db().commit()
+            enriched += 1
+
+            # Optionnel : réécrire dans le JPG original
+            if write_back and media.local_path:
+                if write_gps_to_exif(media.local_path, lat, lon, alt):
+                    exif_written += 1
+
+        # Refresh affichage
+        for i in range(self._list.count()):
+            w = self._list.itemWidget(self._list.item(i))
+            if w:
+                w.refresh()
+
+        msg = f"🛰 {enriched} photo(s) enrichie(s)"
+        if no_match:
+            msg += f" · ⚠️ {no_match} sans correspondance"
+        if write_back:
+            msg += f" · 💾 {exif_written} EXIF réécrit(s)"
+        self._summary.setText(msg)
+        self._summary.setTextFormat(Qt.TextFormat.PlainText)
+        self._btn_enrich.setEnabled(False)
+        log.info(msg)
 
     def _on_queue_all(self):
         from sync.upload_manager import get_upload_manager
