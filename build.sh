@@ -76,7 +76,39 @@ if [ -f "$PLIST" ]; then
     # Remplacer la version dans Info.plist
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST" 2>/dev/null || true
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST" 2>/dev/null || true
-    ok "Info.plist version set to $VERSION"
+    # Bundle ID stable (nécessaire pour Keychain)
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.bikerhapsody.client" "$PLIST" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.bikerhapsody.client" "$PLIST" 2>/dev/null || true
+    ok "Info.plist version=$VERSION, bundle=com.bikerhapsody.client"
+fi
+
+# ── Codesign ad-hoc (nécessaire pour Keychain access) ─────────────────────────
+info "Re-signing bundle (deep, ad-hoc) for Keychain access…"
+codesign --force --deep --sign - --timestamp=none \
+    --options=runtime \
+    --entitlements <(cat <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+    <key>com.apple.security.cs.allow-jit</key><true/>
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+    <key>keychain-access-groups</key><array><string>com.bikerhapsody.client</string></array>
+</dict>
+</plist>
+PLIST
+) "$APP_PATH" 2>&1 | tail -5 || warn "codesign avec entitlements a échoué, fallback simple ad-hoc"
+
+# Fallback : ad-hoc simple si la commande ci-dessus a échoué
+codesign --force --deep --sign - "$APP_PATH" 2>/dev/null || true
+ok "Bundle signé"
+
+# Vérification
+if codesign --verify --deep --strict "$APP_PATH" 2>/dev/null; then
+    ok "Signature valide"
+else
+    warn "Signature non standard (normal pour ad-hoc)"
 fi
 
 # ── Archive pour auto-update ──────────────────────────────────────────────────

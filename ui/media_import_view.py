@@ -200,6 +200,8 @@ class MediaImportView(QWidget):
         super().__init__(parent)
         self._results: list[MediaFile] = []
         self._scan_worker: ScanWorker | None = None
+        self._pending_paths: list[str] = []   # files/folders à scanner en file
+        self._seen_paths: set[str] = set()    # dédup local pour éviter les doublons
         self._build_ui()
 
     def _build_ui(self):
@@ -269,29 +271,54 @@ class MediaImportView(QWidget):
 
     def _on_drop(self, paths: list[str]):
         if not paths:
-            # Ouvrir dialog dossier
-            folder = QFileDialog.getExistingDirectory(self, "Sélectionner un dossier")
-            if folder:
-                paths = [folder]
+            # Clic sur la zone : ouvre un dialog (fichiers OU dossier).
+            # On propose d'abord les fichiers; si annulé, dossier.
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "Sélectionner des fichiers médias",
+                "", "Médias (*.jpg *.jpeg *.png *.heic *.heif *.tiff *.bmp "
+                    "*.mp4 *.mov *.avi *.mkv *.m4v *.fit *.gpx *.tcx);;Tous (*)",
+            )
+            if files:
+                paths = files
             else:
-                return
+                folder = QFileDialog.getExistingDirectory(self, "Sélectionner un dossier")
+                if folder:
+                    paths = [folder]
+                else:
+                    return
 
-        # Prendre le premier path (ou scanner tous)
-        root = paths[0]
-        self._start_scan(root)
+        # Ajouter tous les paths à la file d'attente, dédupliquer
+        added = 0
+        for p in paths:
+            if not p:
+                continue
+            if p in self._seen_paths:
+                continue
+            self._seen_paths.add(p)
+            self._pending_paths.append(p)
+            added += 1
 
-    def _start_scan(self, root: str):
-        if self._scan_worker and self._scan_worker.isRunning():
+        if added == 0:
+            self._summary.setText("⚠️ Tous les fichiers déposés sont déjà dans la liste")
             return
 
-        self._results.clear()
-        self._list.clear()
-        self._summary.setText(f"Scan de {root}…")
+        # Démarrer le prochain scan si aucun en cours
+        self._start_next_scan()
+
+    def _start_next_scan(self):
+        if self._scan_worker and self._scan_worker.isRunning():
+            return  # un scan tourne déjà — _on_scan_done relancera celui-ci
+        if not self._pending_paths:
+            return
+
+        root = self._pending_paths.pop(0)
+        remaining = len(self._pending_paths)
+        suffix = f" (+{remaining} en attente)" if remaining else ""
+        self._summary.setText(f"Scan de {Path(root).name}…{suffix}")
         self._progress.setValue(0)
         self._progress.setVisible(True)
         self._progress_label.setVisible(True)
         self._btn_queue_all.setEnabled(False)
-        self._btn_clear.setEnabled(False)
 
         self._scan_worker = ScanWorker(root)
         self._scan_worker.progress.connect(self._on_scan_progress)
@@ -308,6 +335,10 @@ class MediaImportView(QWidget):
 
     @Slot(object)
     def _on_file_found(self, media: MediaFile):
+        # Éviter les doublons exacts dans la liste UI (par chemin local)
+        for existing in self._results:
+            if existing.local_path == media.local_path:
+                return
         self._results.append(media)
         item = QListWidgetItem(self._list)
         widget = MediaItemWidget(media)
@@ -317,13 +348,18 @@ class MediaImportView(QWidget):
 
     @Slot(list)
     def _on_scan_done(self, results: list):
-        self._progress.setVisible(False)
-        self._progress_label.setVisible(False)
+        # Si d'autres scans sont en attente, on enchaîne sans cacher la barre
+        has_more = bool(self._pending_paths)
 
-        total   = len(results)
-        ready   = sum(1 for m in results if m.status == MediaStatus.READY)
-        dups    = sum(1 for m in results if m.status == MediaStatus.DUPLICATE)
-        errors  = sum(1 for m in results if m.status == MediaStatus.FAILED)
+        if not has_more:
+            self._progress.setVisible(False)
+            self._progress_label.setVisible(False)
+
+        # Statistiques cumulatives sur _results (pas seulement le dernier scan)
+        total   = len(self._results)
+        ready   = sum(1 for m in self._results if m.status == MediaStatus.READY)
+        dups    = sum(1 for m in self._results if m.status == MediaStatus.DUPLICATE)
+        errors  = sum(1 for m in self._results if m.status == MediaStatus.FAILED)
 
         parts = [f"{total} fichier(s) trouvé(s)"]
         if ready:
@@ -332,11 +368,17 @@ class MediaImportView(QWidget):
             parts.append(f"<span style='color:#ca8a04'>{dups} doublons</span>")
         if errors:
             parts.append(f"<span style='color:#dc2626'>{errors} erreurs</span>")
+        if has_more:
+            parts.append(f"<span style='color:#6b7280'>+{len(self._pending_paths)} en attente</span>")
 
         self._summary.setText(" · ".join(parts))
         self._summary.setTextFormat(Qt.TextFormat.RichText)
         self._btn_queue_all.setEnabled(ready > 0)
         self._btn_clear.setEnabled(True)
+
+        # Chaîner le prochain scan si nécessaire
+        if has_more:
+            self._start_next_scan()
 
     def _on_queue_all(self):
         from sync.upload_manager import get_upload_manager
@@ -359,6 +401,8 @@ class MediaImportView(QWidget):
     def _on_clear(self):
         self._results.clear()
         self._list.clear()
+        self._seen_paths.clear()
+        self._pending_paths.clear()
         self._summary.setText("")
         self._btn_queue_all.setEnabled(False)
         self._btn_clear.setEnabled(False)
