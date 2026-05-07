@@ -3,7 +3,7 @@ Sidebar de navigation — style macOS sombre.
 """
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QSpacerItem, QSizePolicy
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QPalette, QColor
 
 SIDEBAR_ITEMS = [
     ("dashboard",   "🏠", "Tableau de bord"),
@@ -19,26 +19,30 @@ SIDEBAR_ITEMS = [
 
 SIDEBAR_STYLE = """
 QWidget#sidebar {
-    background: #1c1c1e;
+    background-color: #1c1c1e;
     border-right: 1px solid #2c2c2e;
 }
-QPushButton.nav-btn {
-    background: transparent;
+QWidget#sidebar QPushButton {
+    background-color: transparent;
     border: none;
     border-radius: 8px;
-    color: #ebebf5cc;
+    color: #f2f2f7;
     text-align: left;
     padding: 10px 14px;
     font-size: 13px;
+    font-weight: 500;
 }
-QPushButton.nav-btn:hover {
-    background: rgba(255,255,255,0.08);
+QWidget#sidebar QPushButton:hover {
+    background-color: rgba(255,255,255,0.10);
     color: #ffffff;
 }
-QPushButton.nav-btn[active="true"] {
-    background: rgba(249,115,22,0.18);
+QWidget#sidebar QPushButton[active="true"] {
+    background-color: rgba(249,115,22,0.22);
     color: #f97316;
-    font-weight: bold;
+    font-weight: 700;
+}
+QWidget#sidebar QLabel {
+    color: #f2f2f7;
 }
 """
 
@@ -50,6 +54,13 @@ class Sidebar(QWidget):
         super().__init__(parent)
         self.setObjectName("sidebar")
         self.setFixedWidth(210)
+        # Forcer le rendu du background via la palette ET la stylesheet
+        # (QWidget par défaut ne peint pas son background même avec un stylesheet)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor("#1c1c1e"))
+        self.setPalette(pal)
+        self.setAutoFillBackground(True)
         self.setStyleSheet(SIDEBAR_STYLE)
 
         self._buttons: dict[str, QPushButton] = {}
