@@ -189,6 +189,15 @@ class MediaItemWidget(QWidget):
                      padding: 3px 8px; font-size: 11px; font-weight: 700; }}
         """)
 
+    def show_progress(self, pct: int):
+        """Affiche la progression d'upload (0-100) dans le badge."""
+        bg, color = "#dbeafe", "#2563eb"
+        self._status_badge.setText(f"⬆ {pct}%")
+        self._status_badge.setStyleSheet(f"""
+            QLabel {{ background: {bg}; color: {color}; border-radius: 6px;
+                     padding: 3px 8px; font-size: 11px; font-weight: 700; }}
+        """)
+
     def refresh(self):
         self._update_status_badge()
         self._load_thumb()
@@ -202,7 +211,11 @@ class MediaImportView(QWidget):
         self._scan_worker: ScanWorker | None = None
         self._pending_paths: list[str] = []   # files/folders à scanner en file
         self._seen_paths: set[str] = set()    # dédup local pour éviter les doublons
+        self._upload_total = 0                # nb total d'uploads programmés
+        self._upload_done = 0                 # nb d'uploads terminés (ok ou erreur)
         self._build_ui()
+        # Connecter le manager d'upload (déjà démarré au bootstrap)
+        QTimer.singleShot(300, self._connect_upload_manager)
 
     def _build_ui(self):
         self.setStyleSheet("background: #f5f5f7;")
@@ -256,6 +269,29 @@ class MediaImportView(QWidget):
         self._summary = QLabel("")
         self._summary.setStyleSheet("font-size: 13px; color: #374151; font-weight: 500;")
         layout.addWidget(self._summary)
+
+        # ── Upload progress (visible quand uploads en cours) ────────────────
+        self._upload_box = QFrame()
+        self._upload_box.setStyleSheet("""
+            QFrame { background: #fff7ed; border: 1px solid #fed7aa;
+                     border-radius: 10px; }
+        """)
+        ub = QVBoxLayout(self._upload_box)
+        ub.setContentsMargins(14, 10, 14, 10)
+        ub.setSpacing(6)
+        self._upload_label = QLabel("")
+        self._upload_label.setStyleSheet("font-size: 12px; color: #9a3412; font-weight: 600;")
+        self._upload_progress = QProgressBar()
+        self._upload_progress.setStyleSheet("""
+            QProgressBar { background: #fed7aa; border-radius: 5px; height: 8px;
+                           border: none; text-align: center; }
+            QProgressBar::chunk { background: #f97316; border-radius: 5px; }
+        """)
+        self._upload_progress.setTextVisible(False)
+        ub.addWidget(self._upload_label)
+        ub.addWidget(self._upload_progress)
+        self._upload_box.setVisible(False)
+        layout.addWidget(self._upload_box)
 
         # Liste des fichiers
         self._list = QListWidget()
@@ -394,9 +430,97 @@ class MediaImportView(QWidget):
             widget = self._list.itemWidget(self._list.item(i))
             if widget:
                 widget.refresh()
+        # Compteur global
+        self._upload_total += count
+        self._refresh_upload_box()
         mgr.start()
         self._summary.setText(f"✅ {count} fichier(s) ajouté(s) à la file d'upload")
         self._btn_queue_all.setEnabled(False)
+
+    # ── Upload manager wiring ────────────────────────────────────────────────
+
+    def _connect_upload_manager(self):
+        try:
+            from sync.upload_manager import get_upload_manager
+            mgr = get_upload_manager()
+            mgr.file_started.connect(self._on_upload_started)
+            mgr.file_progress.connect(self._on_upload_progress)
+            mgr.file_done.connect(self._on_upload_done)
+            mgr.file_failed.connect(self._on_upload_failed)
+            log.debug("Upload manager wired to import view")
+        except Exception as e:
+            log.debug("Upload manager not yet ready: %s", e)
+
+    def _find_widget_by_db_id(self, media_id: int):
+        for i in range(self._list.count()):
+            w = self._list.itemWidget(self._list.item(i))
+            if w and w.media.db_id == media_id:
+                return w
+        return None
+
+    def _refresh_upload_box(self):
+        if self._upload_total <= 0:
+            self._upload_box.setVisible(False)
+            return
+        self._upload_box.setVisible(True)
+        remaining = max(0, self._upload_total - self._upload_done)
+        self._upload_label.setText(
+            f"⬆️ Upload en cours : {self._upload_done}/{self._upload_total} terminé(s)"
+            + (f" — {remaining} restant(s)" if remaining else "")
+        )
+        self._upload_progress.setMaximum(max(1, self._upload_total))
+        self._upload_progress.setValue(self._upload_done)
+        if remaining == 0:
+            # Tout fini → cacher après 4s
+            QTimer.singleShot(4000, lambda: self._upload_box.setVisible(False))
+
+    @Slot(int, str)
+    def _on_upload_started(self, media_id: int, filename: str):
+        self._upload_label.setText(f"⬆️ Upload en cours : {filename}")
+        self._upload_box.setVisible(True)
+        w = self._find_widget_by_db_id(media_id)
+        if w:
+            w.show_progress(0)
+
+    @Slot(int, int, int)
+    def _on_upload_progress(self, media_id: int, done: int, total: int):
+        if total <= 0:
+            return
+        pct = int(done / total * 100)
+        w = self._find_widget_by_db_id(media_id)
+        if w:
+            w.show_progress(pct)
+        # Progression globale = uploads terminés + ratio du fichier en cours
+        if self._upload_total > 0:
+            cur_ratio = done / total
+            self._upload_progress.setMaximum(self._upload_total * 100)
+            self._upload_progress.setValue(int((self._upload_done + cur_ratio) * 100))
+
+    @Slot(int, str)
+    def _on_upload_done(self, media_id: int, server_id: str):
+        self._upload_done += 1
+        for media in self._results:
+            if media.db_id == media_id:
+                media.status = MediaStatus.UPLOADED
+                break
+        w = self._find_widget_by_db_id(media_id)
+        if w:
+            w.refresh()
+        self._refresh_upload_box()
+
+    @Slot(int, str, str)
+    def _on_upload_failed(self, media_id: int, error: str, retry_label: str):
+        # On compte comme "tenté" mais pas terminé tant que ça retry
+        if retry_label == "Abandon":
+            self._upload_done += 1
+            for media in self._results:
+                if media.db_id == media_id:
+                    media.status = MediaStatus.FAILED
+                    break
+            w = self._find_widget_by_db_id(media_id)
+            if w:
+                w.refresh()
+            self._refresh_upload_box()
 
     def _on_clear(self):
         self._results.clear()
@@ -431,6 +555,8 @@ class MediaImportView(QWidget):
         mgr = get_upload_manager()
         mgr.add_to_queue(media.db_id)
         media.status = MediaStatus.UPLOADING
+        self._upload_total += 1
+        self._refresh_upload_box()
         mgr.start()
         # Rafraîchir le widget
         for i in range(self._list.count()):
