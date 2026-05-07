@@ -8,7 +8,7 @@ from logs.logger import get_logger
 
 log = get_logger("db")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATIONS = {
     1: [
@@ -114,7 +114,11 @@ MIGRATIONS = {
             version INTEGER PRIMARY KEY
         )
         """,
-    ]
+    ],
+    2: [
+        # Stocker le chemin de la miniature pour la réutiliser entre imports
+        "ALTER TABLE media_files ADD COLUMN thumbnail_path TEXT",
+    ],
 }
 
 

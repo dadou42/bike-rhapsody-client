@@ -102,25 +102,49 @@ def scan_and_process(
             # 2. Checksum
             media.sha256 = compute_sha256(path)
 
-            # 3. Déduplication
+            # 3. Déduplication (vrai doublon = déjà uploadé)
+            from media.deduplicate import find_local_record
             dup = check_duplicate(str(path), media.sha256)
+            existing_local = find_local_record(media.sha256)
+
             if dup["is_duplicate"]:
                 media.status = MediaStatus.DUPLICATE
-                log.debug("Duplicate: %s (source=%s)", fname, dup["source"])
+                if existing_local:
+                    media.db_id = existing_local["id"]
+                    media.thumbnail_path = existing_local.get("thumbnail_path")
+                log.debug("Duplicate (uploaded): %s (source=%s)", fname, dup["source"])
             else:
                 media.status = MediaStatus.READY
 
-            # 4. Persister en DB (sauf si doublon local exact)
-            if not (dup["is_duplicate"] and dup["source"] == "local"):
-                media.db_id = _save_media_to_db(media)
+                if existing_local:
+                    # Reprise d'un import précédent qui n'a jamais réussi à uploader
+                    # → on réutilise le row existant au lieu d'en créer un nouveau
+                    media.db_id = existing_local["id"]
+                    media.thumbnail_path = existing_local.get("thumbnail_path")
+                    db().execute(
+                        "UPDATE media_files SET local_path=?, status='ready', "
+                        "updated_at=datetime('now') WHERE id=?",
+                        (media.local_path, media.db_id),
+                    )
+                    db().commit()
+                    log.info("Re-import (was %s): %s → id=%s",
+                             existing_local.get("status"), fname, media.db_id)
+                else:
+                    media.db_id = _save_media_to_db(media)
 
-                # 5. Miniature
-                if media.db_id and media.status == MediaStatus.READY:
+                # Miniature (générer si manquante)
+                if media.db_id and not (media.thumbnail_path and Path(media.thumbnail_path).exists()):
                     thumb = generate_thumbnail(str(path), media.sha256)
-                    media.thumbnail_path = thumb
+                    if thumb:
+                        media.thumbnail_path = thumb
+                        db().execute(
+                            "UPDATE media_files SET thumbnail_path=? WHERE id=?",
+                            (thumb, media.db_id),
+                        )
+                        db().commit()
 
-                # 6. File d'attente auto
-                if auto_queue and media.status == MediaStatus.READY and media.db_id:
+                # File d'attente auto
+                if auto_queue and media.db_id:
                     _add_to_queue(media.db_id)
 
         except Exception as e:

@@ -16,22 +16,33 @@ from logs.logger import get_logger
 log = get_logger("media.deduplicate")
 
 
-def is_duplicate_local(path: str, computed_sha256: Optional[str] = None) -> Optional[dict]:
+def find_local_record(computed_sha256: Optional[str]) -> Optional[dict]:
     """
-    Vérifie si le fichier existe déjà en base locale.
-    Retourne le dict du media existant, ou None.
+    Cherche un media existant en DB locale par sha256, peu importe son statut.
+    Retourne le dict du media ou None.
     """
     if not computed_sha256:
         return None
-
     row = db().execute(
         "SELECT * FROM media_files WHERE sha256 = ? AND status != 'ignored' LIMIT 1",
         (computed_sha256,),
     ).fetchone()
+    return dict(row) if row else None
 
-    if row:
-        log.debug("Duplicate found locally: %s → id=%s", Path(path).name, row["id"])
-        return dict(row)
+
+def is_duplicate_local(path: str, computed_sha256: Optional[str] = None) -> Optional[dict]:
+    """
+    Vérifie si le fichier est déjà UPLOADÉ avec succès en local.
+    Un media en status 'ready', 'failed', 'uploading' n'est PAS un vrai doublon
+    (il n'a jamais atteint le serveur) → on permet de le re-traiter.
+
+    Retourne le dict du media uploaded, ou None.
+    """
+    rec = find_local_record(computed_sha256)
+    if rec and rec.get("status") == "uploaded":
+        log.debug("True duplicate (uploaded) found locally: %s → id=%s",
+                  Path(path).name, rec["id"])
+        return rec
     return None
 
 

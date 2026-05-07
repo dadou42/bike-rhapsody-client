@@ -142,6 +142,28 @@ class SettingsView(QWidget):
         auth_box.layout().addWidget(self._auth_status)
         main.addWidget(auth_box)
 
+        # ── Groupe Maintenance ────────────────────────────────────────────────
+        maint_box = self._make_group("🧹 Maintenance médias")
+
+        info_lbl = QLabel(
+            "Réinitialiser efface l'index local des médias (DB locale + miniatures + "
+            "file d'upload). Les fichiers originaux ne sont pas touchés."
+        )
+        info_lbl.setStyleSheet("font-size: 12px; color: #6b7280;")
+        info_lbl.setWordWrap(True)
+
+        self._btn_reset_media = QPushButton("🗑 Réinitialiser l'index médias")
+        self._btn_reset_media.setStyleSheet(self._btn_style("#dc2626"))
+        self._btn_reset_media.clicked.connect(self._on_reset_media)
+
+        self._maint_status = QLabel("")
+        self._maint_status.setStyleSheet("font-size: 12px; color: #6b7280;")
+
+        maint_box.layout().addWidget(info_lbl)
+        maint_box.layout().addWidget(self._btn_reset_media)
+        maint_box.layout().addWidget(self._maint_status)
+        main.addWidget(maint_box)
+
         # ── Groupe Mises à jour ───────────────────────────────────────────────
         update_box = self._make_group("🔄 Mises à jour")
         self._check_auto_update = QCheckBox("Vérifier les mises à jour au démarrage")
@@ -340,6 +362,36 @@ class SettingsView(QWidget):
         profile = get_active_profile()
         logout(profile["name"] if profile else "default")
         get_state().set_authenticated(False, "")
+
+    def _on_reset_media(self):
+        reply = QMessageBox.question(
+            self,
+            "Réinitialiser l'index médias",
+            "Effacer toutes les entrées de la DB locale (médias + file d'upload + miniatures) ?\n\n"
+            "Tes fichiers originaux ne seront PAS supprimés.\n"
+            "Tu pourras les ré-importer ensuite.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from storage.local_db import db
+            from pathlib import Path
+            import shutil
+            db().execute("DELETE FROM upload_queue")
+            db().execute("DELETE FROM media_files")
+            db().commit()
+            # Effacer aussi les miniatures
+            thumbs = Path.home() / "Library" / "Application Support" / "BikeRhapsodyClient" / "thumbnails"
+            if thumbs.exists():
+                shutil.rmtree(thumbs, ignore_errors=True)
+            self._maint_status.setText("✅ Index médias réinitialisé")
+            self._maint_status.setStyleSheet("font-size: 12px; color: #16a34a; font-weight: 600;")
+            log.info("Media index reset by user")
+        except Exception as e:
+            self._maint_status.setText(f"❌ Erreur : {e}")
+            self._maint_status.setStyleSheet("font-size: 12px; color: #dc2626;")
+            log.error("Reset media failed: %s", e)
 
     def _on_check_update(self):
         self._btn_check_update.setEnabled(False)
