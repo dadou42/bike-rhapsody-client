@@ -11,6 +11,30 @@ log = get_logger("api.media")
 CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
 
 
+class _ProgressReader:
+    """Wrapper sur un file object qui appelle progress_cb à chaque read.
+    Utilisé par httpx pour suivre l'upload en streaming réel."""
+
+    def __init__(self, fileobj, total: int, cb):
+        self._f = fileobj
+        self._total = total
+        self._cb = cb
+        self._read = 0
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._f.read(size)
+        if chunk:
+            self._read += len(chunk)
+            try:
+                self._cb(self._read, self._total)
+            except Exception:
+                pass
+        return chunk
+
+    def __getattr__(self, name):
+        return getattr(self._f, name)
+
+
 def upload_media(
     local_path: str,
     sha256: Optional[str] = None,
@@ -42,22 +66,22 @@ def upload_media(
     if gps_lon is not None:
         fields["gps_lon"] = str(gps_lon)
 
-    # Multipart upload — timeout étendu pour gros fichiers
-    with open(path, "rb") as f:
-        files = {"file": (path.name, f, _mime_type(path))}
-        # Note : la progression réelle d'upload nécessite un client httpx
-        # avec hook personnalisé ; pour l'instant on émet 50% au start et
-        # 100% à la fin pour donner un retour visuel.
-        if progress_cb:
-            progress_cb(0, size)
+    # Multipart streaming avec suivi progression réel
+    with open(path, "rb") as raw:
+        reader = _ProgressReader(raw, size, progress_cb) if progress_cb else raw
+        files = {"file": (path.name, reader, _mime_type(path))}
         r = client.post(
             "/api/media/upload",
             files=files,
             data=fields,
-            timeout=300,  # 5 minutes pour les gros fichiers
+            timeout=300,  # 5 min pour les gros fichiers
         )
+        # S'assurer qu'on émet 100% à la fin
         if progress_cb:
-            progress_cb(size, size)
+            try:
+                progress_cb(size, size)
+            except Exception:
+                pass
 
     if r.status_code not in (200, 201):
         detail = _extract_error(r)

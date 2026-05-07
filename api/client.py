@@ -7,6 +7,9 @@ from logs.logger import get_logger
 
 log = get_logger("api.client")
 
+# Nom du cookie de session côté serveur Bike Rhapsody (cf. app/auth.py)
+SESSION_COOKIE_NAME = "br_session"
+
 
 class BRClient:
     """Client HTTP vers l'API Bike Rhapsody."""
@@ -28,9 +31,16 @@ class BRClient:
         return bool(self._session_cookie)
 
     def set_session_cookie(self, cookie: str) -> None:
+        """Stocke le cookie de session sous le nom attendu par le serveur (br_session)."""
         self._session_cookie = cookie
-        self._http.cookies.set("session", cookie)
-        log.debug("Session cookie set")
+        # Supprimer tout ancien cookie (au cas où il y en aurait sous d'autres noms)
+        for name in ("session", "br_session", "SESSION"):
+            try:
+                self._http.cookies.delete(name)
+            except Exception:
+                pass
+        self._http.cookies.set(SESSION_COOKIE_NAME, cookie)
+        log.debug("Session cookie set as '%s'", SESSION_COOKIE_NAME)
 
     def clear_session(self) -> None:
         self._session_cookie = None
