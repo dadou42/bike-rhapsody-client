@@ -67,7 +67,8 @@ class UploadWorker(QThread):
     def _next_job(self) -> dict | None:
         """Récupère le prochain job uploadable (pending ou retry dû)."""
         rows = db().execute(
-            """SELECT q.*, m.local_path, m.original_name, m.sha256, m.activity_id
+            """SELECT q.*, m.local_path, m.original_name, m.sha256, m.activity_id,
+                      m.captured_at, m.gps_lat, m.gps_lon, m.gps_alt
                FROM upload_queue q
                JOIN media_files m ON m.id = q.media_id
                WHERE q.status IN ('pending', 'retrying')
@@ -84,6 +85,9 @@ class UploadWorker(QThread):
         filename   = job["original_name"] or local_path.split("/")[-1]
         sha256     = job.get("sha256", "")
         activity_id = job.get("activity_id")
+        captured_at = job.get("captured_at")
+        gps_lat = job.get("gps_lat")
+        gps_lon = job.get("gps_lon")
 
         log.info("Uploading: %s (queue_id=%d)", filename, queue_id)
         self.file_started.emit(media_id, filename)
@@ -102,6 +106,9 @@ class UploadWorker(QThread):
                 local_path,
                 sha256=sha256 or None,
                 activity_id=str(activity_id) if activity_id else None,
+                captured_at=captured_at,
+                gps_lat=gps_lat,
+                gps_lon=gps_lon,
                 progress_cb=on_progress,
             )
             server_id = str(result.get("id", ""))
