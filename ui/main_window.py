@@ -16,6 +16,7 @@ from ui.settings_view import SettingsView
 from ui.logs_view import LogsView
 from ui.media_import_view import MediaImportView
 from ui.queue_view import QueueView
+from ui.activities_view import ActivitiesView
 from ui.placeholder_view import PlaceholderView
 from app.app_state import get_state
 from logs.logger import get_logger
@@ -88,7 +89,7 @@ class MainWindow(QMainWindow):
             "dashboard":  DashboardView(),
             "import":     MediaImportView(),
             "queue":      QueueView(),
-            "activities": PlaceholderView("Activités", "🚴", "Phase 3 — matching médias ↔ activités"),
+            "activities": ActivitiesView(),
             "backup":     PlaceholderView("Sauvegarde", "💾", "Phase 5 — BDD + fichiers + manifest"),
             "migration":  PlaceholderView("Migration serveur", "🔄", "Phase 6 — assistant source/cible"),
             "history":    PlaceholderView("Historique", "📅", "Phase 2+ — historique des opérations"),
