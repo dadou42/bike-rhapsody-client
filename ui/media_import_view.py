@@ -483,19 +483,36 @@ class MediaImportView(QWidget):
             self._btn_enrich.setEnabled(True)
             return
 
+        # Diag : ranges des FIT vs photos pour mismatch dates
+        fit_ranges = []
+        for t in enricher.tracks:
+            if t.start and t.end:
+                fit_ranges.append((Path(t.source_path).name,
+                                   t.start.strftime("%Y-%m-%d %H:%M"),
+                                   t.end.strftime("%H:%M")))
+        log.info("FIT tracks chargées : %s", fit_ranges)
+
         # Boucle d'enrichissement
         write_back = self._chk_write_exif.isChecked()
         enriched = 0
         no_match = 0
         exif_written = 0
+        already_geo = 0
+        no_capture = 0
+        photo_dates: set[str] = set()
+        re_queue_ids: list[int] = []
+
         for media in self._results:
             if (media.file_type or "").lower() != "photo":
                 continue
             if media.gps_lat is not None and media.gps_lon is not None:
+                already_geo += 1
                 continue
             if not media.captured_at:
-                no_match += 1
+                no_capture += 1
                 continue
+
+            photo_dates.add(media.captured_at[:10])
 
             gps = enricher.find_gps(media.captured_at)
             if gps is None:
@@ -516,6 +533,9 @@ class MediaImportView(QWidget):
                     (lat, lon, alt, media.db_id),
                 )
                 db().commit()
+                # Si la photo est déjà uploadée, re-queue pour faire le backfill serveur
+                if media.status == MediaStatus.UPLOADED:
+                    re_queue_ids.append(media.db_id)
             enriched += 1
 
             # Optionnel : réécrire dans le JPG original
@@ -529,15 +549,56 @@ class MediaImportView(QWidget):
             if w:
                 w.refresh()
 
-        msg = f"🛰 {enriched} photo(s) enrichie(s)"
+        # Re-queue les photos déjà uploadées pour propager GPS au serveur
+        if re_queue_ids:
+            try:
+                from sync.upload_manager import get_upload_manager
+                mgr = get_upload_manager()
+                for mid in re_queue_ids:
+                    # Reset du statut local pour permettre le re-upload (qui déclenchera
+                    # le backfill côté serveur via la dédup sha256)
+                    db().execute(
+                        "UPDATE media_files SET status='ready' WHERE id=?", (mid,)
+                    )
+                    db().commit()
+                    mgr.add_to_queue(mid)
+                self._upload_total += len(re_queue_ids)
+                self._refresh_upload_box()
+                mgr.start()
+                log.info("Re-queued %d photos pour backfill GPS serveur", len(re_queue_ids))
+            except Exception as e:
+                log.warning("Re-queue échec : %s", e)
+
+        # Construire le message de résumé
+        parts = [f"🛰 {enriched} photo(s) enrichie(s)"]
         if no_match:
-            msg += f" · ⚠️ {no_match} sans correspondance"
+            parts.append(f"⚠️ {no_match} sans correspondance")
+        if already_geo:
+            parts.append(f"✓ {already_geo} déjà GPS")
+        if no_capture:
+            parts.append(f"❌ {no_capture} sans date EXIF")
         if write_back:
-            msg += f" · 💾 {exif_written} EXIF réécrit(s)"
-        self._summary.setText(msg)
+            parts.append(f"💾 {exif_written} EXIF réécrit(s)")
+        if re_queue_ids:
+            parts.append(f"📤 {len(re_queue_ids)} re-uploads pour serveur")
+        self._summary.setText(" · ".join(parts))
         self._summary.setTextFormat(Qt.TextFormat.PlainText)
+
+        # Si aucune photo enrichie ET qu'il y avait des candidates → expliquer pourquoi
+        if enriched == 0 and no_match > 0 and fit_ranges:
+            fit_summary = ", ".join(f"{r[0]} : {r[1]}–{r[2]}" for r in fit_ranges)
+            photo_dates_str = ", ".join(sorted(photo_dates)) or "?"
+            QMessageBox.information(
+                self,
+                "Aucune correspondance trouvée",
+                f"Aucune photo n'a pu être enrichie.\n\n"
+                f"📅 Dates des photos : {photo_dates_str}\n"
+                f"🛰 Plage des FIT : {fit_summary}\n\n"
+                f"Vérifie que tu importes le FIT correspondant à la sortie des photos.",
+            )
+
         self._btn_enrich.setEnabled(False)
-        log.info(msg)
+        log.info(self._summary.text())
 
     def _on_queue_all(self):
         from sync.upload_manager import get_upload_manager
