@@ -9,7 +9,7 @@ GITHUB_REPO = "dadou42/bike-rhapsody-client"
 GITHUB_RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 ASSET_NAME = "BikeRhapsodyClient-universal2.app.zip"
 
-DEFAULT_SERVER_URL = "http://192.168.1.4:8000"
+DEFAULT_SERVER_URL = "http://your-nas.local:8000"
 DEFAULT_TIMEOUT = 15  # secondes
 
 BUFFER_DIR = Path.home() / "BikeRhapsodyMediaBuffer"

@@ -30,7 +30,7 @@ Au premier lancement, autorise l'app dans **Réglages → Confidentialité et s�
 ### Première configuration
 
 1. Lance l'app → onglet **Paramètres**
-2. URL du serveur Bike Rhapsody (ex: `http://192.168.1.4:8000`) → **Tester la connexion**
+2. URL du serveur Bike Rhapsody (ex: `http://nas.local:8000`) → **Tester la connexion**
 3. **Enregistrer le profil**
 4. Saisis ton email / mot de passe → **Se connecter**
 5. Si la 2FA est activée, le code TOTP est demandé dans une fenêtre dédiée

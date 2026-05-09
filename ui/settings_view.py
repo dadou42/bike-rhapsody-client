@@ -73,7 +73,7 @@ class SettingsView(QWidget):
         server_form.setSpacing(10)
 
         self._url_input = QLineEdit()
-        self._url_input.setPlaceholderText("http://192.168.1.4:8000")
+        self._url_input.setPlaceholderText("http://your-nas.local:8000")
         self._url_input.setStyleSheet(self._input_style())
 
         self._profile_name_input = QLineEdit()
