@@ -297,6 +297,15 @@ class ActivitiesView(QWidget):
         )
         mb.addWidget(self._spin_tol)
 
+        self._btn_resync = QPushButton("🔄 Resync méta")
+        self._btn_resync.setStyleSheet(self._btn("#8b5cf6"))
+        self._btn_resync.setToolTip(
+            "Pousse les captured_at + GPS depuis la DB locale vers le serveur\n"
+            "(pour les médias uploadés avant que ces champs soient envoyés)"
+        )
+        self._btn_resync.clicked.connect(self._on_resync_metadata)
+        mb.addWidget(self._btn_resync)
+
         self._btn_preview = QPushButton("👁 Aperçu")
         self._btn_preview.setStyleSheet(self._btn("#0ea5e9"))
         self._btn_preview.setToolTip("Simuler le matching sans appliquer")
@@ -455,6 +464,72 @@ class ActivitiesView(QWidget):
 
         self._btn_match.setEnabled(n_orph > 0 and n_act > 0)
         self._btn_preview.setEnabled(n_orph > 0 and n_act > 0)
+
+    # ── Resync metadata (backfill) ──────────────────────────────────────────
+
+    def _on_resync_metadata(self):
+        """Lit la DB locale et pousse les métadonnées au serveur (batch)."""
+        from storage.local_db import db
+        try:
+            rows = db().execute(
+                "SELECT sha256, captured_at, gps_lat, gps_lon, gps_alt "
+                "FROM media_files "
+                "WHERE sha256 IS NOT NULL AND sha256 != '' "
+                "AND (captured_at IS NOT NULL OR gps_lat IS NOT NULL)"
+            ).fetchall()
+        except Exception as e:
+            QMessageBox.warning(self, "Resync", f"Erreur lecture DB locale : {e}")
+            return
+
+        updates = []
+        for r in rows:
+            d = dict(r)
+            if not d.get("sha256"):
+                continue
+            updates.append({
+                "sha256": d["sha256"],
+                "captured_at": d.get("captured_at"),
+                "gps_lat": d.get("gps_lat"),
+                "gps_lon": d.get("gps_lon"),
+                "gps_alt": d.get("gps_alt"),
+            })
+
+        if not updates:
+            QMessageBox.information(
+                self, "Resync",
+                "Aucune métadonnée à pousser depuis la DB locale.",
+            )
+            return
+
+        self._btn_resync.setEnabled(False)
+        self._summary_lbl.setText(f"🔄 Push de {len(updates)} méta vers le serveur…")
+
+        class _Worker(QThread):
+            done = Signal(object)
+            def __init__(self, ups): super().__init__(); self.ups = ups
+            def run(self):
+                from api.matching_api import sync_metadata
+                self.done.emit(sync_metadata(self.ups))
+
+        self._resync_worker = _Worker(updates)
+        self._resync_worker.done.connect(self._on_resync_done)
+        self._resync_worker.start()
+
+    @Slot(object)
+    def _on_resync_done(self, result: dict):
+        self._btn_resync.setEnabled(True)
+        if result.get("error"):
+            QMessageBox.warning(self, "Resync", f"Erreur : {result['error']}")
+            return
+        QMessageBox.information(
+            self, "Resync méta terminée",
+            f"📤 {result.get('received', 0)} métadonnées envoyées\n"
+            f"✅ {result.get('updated', 0)} mises à jour côté serveur\n"
+            f"➖ {result.get('no_change_needed', 0)} déjà à jour\n"
+            f"❓ {result.get('not_found', 0)} non trouvés (sha256 inconnu serveur)\n\n"
+            f"Tu peux maintenant cliquer 🔗 Matcher auto pour lier les médias backfillés.",
+        )
+        self.refresh()
 
     # ── Matching ────────────────────────────────────────────────────────────
 

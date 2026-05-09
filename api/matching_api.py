@@ -68,6 +68,30 @@ def link_orphan(media_id: int, activity_id: int) -> bool:
         return False
 
 
+def sync_metadata(updates: list[dict]) -> dict:
+    """
+    Pousse en batch les métadonnées (captured_at, gps) au serveur.
+    `updates` = [{"sha256": str, "captured_at": str, "gps_lat": float|None,
+                  "gps_lon": float|None, "gps_alt": float|None}, ...]
+    Le serveur ne touche que les champs NULL côté serveur (pas d'écrasement).
+    Retourne {ok, received, updated, not_found, no_change_needed}.
+    """
+    if not updates:
+        return {"ok": True, "received": 0, "updated": 0, "not_found": 0}
+    try:
+        r = get_client().post(
+            "/api/media/sync-metadata",
+            json={"updates": updates},
+            timeout=60,
+        )
+        if r.status_code == 200:
+            return r.json()
+        return {"error": f"HTTP {r.status_code}", "updated": 0}
+    except Exception as e:
+        log.error("sync_metadata failed: %s", e)
+        return {"error": str(e), "updated": 0}
+
+
 def unlink_orphan(media_id: int) -> bool:
     try:
         r = get_client().delete(f"/api/media/orphans/{media_id}/link")
