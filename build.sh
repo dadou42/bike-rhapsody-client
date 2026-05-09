@@ -49,18 +49,28 @@ rm -rf build/ dist/
 
 # ── Build ──────────────────────────────────────────────────────────────────────
 info "Running PyInstaller…"
+
+# --add-data assets uniquement si le dossier contient des fichiers
+ASSETS_OPT=""
+if find assets -type f ! -name '.gitkeep' 2>/dev/null | grep -q .; then
+    ASSETS_OPT="--add-data assets:assets"
+fi
+
 pyinstaller \
     --noconfirm \
     --windowed \
     --name "$APP_NAME" \
     $TARGET_ARCH \
     --add-data "version.json:." \
-    --add-data "assets:assets" \
+    $ASSETS_OPT \
     --hidden-import PySide6.QtCore \
     --hidden-import PySide6.QtWidgets \
     --hidden-import PySide6.QtGui \
     --hidden-import keyring.backends.macOS \
     --hidden-import keyring.backends.fail \
+    --hidden-import fitparse \
+    --hidden-import piexif \
+    --collect-submodules fitparse \
     main.py
 
 APP_PATH="dist/${APP_NAME}.app"
